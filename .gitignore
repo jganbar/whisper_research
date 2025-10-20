@@ -50,8 +50,8 @@ wandb/
 *.bin
 *.safetensors
 
-# Data
-data/
+# Data (root-level only, not src/data/)
+/data/
 cache/
 .cache/
 
