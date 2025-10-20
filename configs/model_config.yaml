@@ -1,0 +1,23 @@
+# Model Configuration
+
+# Base Whisper model
+base_model:
+  name: "openai/whisper-large-v3"
+  cache_dir: "./cache/models"
+  
+# Decoder configuration
+decoder:
+  max_length: 448  # Whisper's decoder max length
+  dropout: 0.1
+  attention_dropout: 0.1
+  
+# Tokenizer settings
+tokenizer:
+  name: "openai/whisper-large-v3"
+  cache_dir: "./cache/tokenizers"
+  
+# Model saving
+save:
+  output_dir: "./experiments/decoder_extracted"
+  save_format: "pytorch"
+
