@@ -83,6 +83,9 @@ def main():
     
     # Create training config
     training_config = config['training']
+    tensorboard_config = config.get('tensorboard', {})
+    wandb_config = config.get('wandb', {})
+    
     train_cfg = TrainingConfig(
         learning_rate=training_config['learning_rate'],
         weight_decay=training_config['weight_decay'],
@@ -96,7 +99,9 @@ def main():
         eval_steps=training_config['eval_steps'],
         logging_steps=training_config['logging_steps'],
         output_dir=training_config['output_dir'],
-        log_to_wandb=config.get('wandb', {}).get('project') is not None,
+        log_to_tensorboard=tensorboard_config.get('log_dir') is not None,
+        tensorboard_dir=tensorboard_config.get('log_dir', './experiments/runs'),
+        log_to_wandb=wandb_config.get('enabled', False),
         device=args.device,
         seed=config['seed'],
     )

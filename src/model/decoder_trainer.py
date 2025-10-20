@@ -14,6 +14,7 @@ import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from .decoder_extractor import WhisperDecoderLM
@@ -39,7 +40,9 @@ class TrainingConfig:
     output_dir: str = "./experiments/decoder_training"
     eval_steps: int = 500
     logging_steps: int = 100
-    log_to_wandb: bool = True
+    log_to_tensorboard: bool = True
+    tensorboard_dir: str = "./experiments/runs"
+    log_to_wandb: bool = False
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
 
@@ -75,6 +78,12 @@ class DecoderTrainer:
         
         os.makedirs(config.output_dir, exist_ok=True)
         
+        # Initialize TensorBoard
+        self.writer = None
+        if config.log_to_tensorboard:
+            self._init_tensorboard()
+        
+        # Initialize W&B (optional)
         if config.log_to_wandb:
             self._init_wandb()
         
@@ -133,8 +142,20 @@ class DecoderTrainer:
             milestones=[self.config.warmup_steps],
         )
     
+    def _init_tensorboard(self):
+        """Initialize TensorBoard logging."""
+        try:
+            log_dir = os.path.join(self.config.tensorboard_dir, "decoder_training")
+            os.makedirs(log_dir, exist_ok=True)
+            self.writer = SummaryWriter(log_dir=log_dir)
+            logger.info(f"TensorBoard logging to {log_dir}")
+            logger.info(f"View with: tensorboard --logdir {self.config.tensorboard_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize TensorBoard: {e}")
+            self.config.log_to_tensorboard = False
+    
     def _init_wandb(self):
-        """Initialize Weights & Biases logging."""
+        """Initialize Weights & Biases logging (optional)."""
         try:
             import wandb
             wandb.init(
@@ -211,6 +232,14 @@ class DecoderTrainer:
                             "lr": f"{lr:.2e}",
                         })
                         
+                        # Log to TensorBoard
+                        if self.writer is not None:
+                            self.writer.add_scalar("train/loss", avg_loss, self.global_step)
+                            self.writer.add_scalar("train/perplexity", perplexity, self.global_step)
+                            self.writer.add_scalar("train/learning_rate", lr, self.global_step)
+                            self.writer.add_scalar("train/epoch", epoch, self.global_step)
+                        
+                        # Log to W&B (optional)
                         if self.config.log_to_wandb:
                             import wandb
                             wandb.log({
@@ -243,6 +272,10 @@ class DecoderTrainer:
         
         logger.info("Training completed!")
         self.save_checkpoint(is_final=True)
+        
+        # Close TensorBoard writer
+        if self.writer is not None:
+            self.writer.close()
     
     def evaluate(self) -> float:
         """Evaluate on validation set."""
@@ -270,6 +303,12 @@ class DecoderTrainer:
         
         logger.info(f"Validation loss: {avg_loss:.4f}, Perplexity: {perplexity:.2f}")
         
+        # Log to TensorBoard
+        if self.writer is not None:
+            self.writer.add_scalar("val/loss", avg_loss, self.global_step)
+            self.writer.add_scalar("val/perplexity", perplexity, self.global_step)
+        
+        # Log to W&B (optional)
         if self.config.log_to_wandb:
             import wandb
             wandb.log({
