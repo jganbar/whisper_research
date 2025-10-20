@@ -95,33 +95,60 @@ def load_dollma_dataset(
     cache_dir: Optional[str] = None,
     streaming: bool = False,
     split: Optional[str] = None,
+    configs: Optional[List[str]] = None,
 ) -> HFDataset:
     """
     Load the DOLLMA dataset from HuggingFace.
+    
+    DOLLMA has multiple configs (subsets) for different Azerbaijani text sources.
+    This function can load one or all of them.
     
     Args:
         dataset_name: Name of the dataset on HuggingFace Hub
         cache_dir: Directory to cache the dataset
         streaming: Whether to use streaming mode
         split: Specific split to load
+        configs: List of dataset configs to load. If None, loads all available configs.
+                Available: ['anl-news', 'azwiki', 'bhos', 'elite-blogs', 
+                           'elite-books', 'eqanun', 'mediocore-books', 'translated-enwiki']
         
     Returns:
-        Loaded dataset
+        Loaded dataset (concatenated if multiple configs)
     """
     logger.info(f"Loading dataset: {dataset_name}")
     
+    # Available DOLLMA configs
+    available_configs = [
+        'anl-news', 'azwiki', 'bhos', 'elite-blogs', 
+        'elite-books', 'eqanun', 'mediocore-books', 'translated-enwiki'
+    ]
+    
+    if configs is None:
+        configs = available_configs
+        logger.info(f"Loading all {len(configs)} DOLLMA subsets")
+    
     try:
-        dataset = load_dataset(
-            dataset_name,
-            cache_dir=cache_dir,
-            streaming=streaming,
-            split=split,
-        )
+        datasets = []
+        for config in configs:
+            logger.info(f"  Loading config: {config}")
+            ds = load_dataset(
+                dataset_name,
+                config,
+                cache_dir=cache_dir,
+                streaming=streaming,
+                split=split or "train",
+            )
+            datasets.append(ds)
+            if not streaming:
+                logger.info(f"    Loaded {len(ds)} examples from {config}")
         
-        if not streaming:
-            logger.info(f"Dataset loaded: {len(dataset)} examples")
+        # Concatenate all datasets
+        if len(datasets) > 1:
+            from datasets import concatenate_datasets
+            dataset = concatenate_datasets(datasets)
+            logger.info(f"Total dataset size: {len(dataset)} examples")
         else:
-            logger.info("Dataset loaded in streaming mode")
+            dataset = datasets[0]
         
         return dataset
     
