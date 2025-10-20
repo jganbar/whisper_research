@@ -1,0 +1,73 @@
+# Training Configuration
+
+# Dataset
+dataset:
+  name: "allmalab/DOLLMA"
+  cache_dir: "./cache/datasets"
+  streaming: false
+  train_split: 0.95
+  val_split: 0.05
+  seed: 42
+  
+  # Text preprocessing
+  preprocessing:
+    lowercase: false
+    remove_punctuation: false
+    min_length: 10
+    max_length: 10000
+
+# Data loading
+dataloader:
+  batch_size: 32
+  num_workers: 4
+  pin_memory: true
+  shuffle: true
+  
+# Training hyperparameters
+training:
+  # Optimizer
+  optimizer: "adamw"
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  
+  # Learning rate schedule
+  lr_scheduler: "cosine"
+  warmup_steps: 1000
+  
+  # Training duration
+  num_epochs: 3
+  max_steps: -1
+  
+  # Gradient settings
+  gradient_accumulation_steps: 4
+  max_grad_norm: 1.0
+  
+  # Mixed precision
+  fp16: false
+  bf16: true
+  
+  # Checkpointing
+  save_strategy: "steps"
+  save_steps: 1000
+  save_total_limit: 3
+  
+  # Evaluation
+  eval_strategy: "steps"
+  eval_steps: 500
+  
+  # Logging
+  logging_steps: 100
+  report_to: ["wandb"]
+  
+  # Output
+  output_dir: "./experiments/decoder_training"
+
+# Weights & Biases
+wandb:
+  project: "whisper-decoder-azerbaijani"
+  entity: null
+  tags: ["whisper", "decoder", "azerbaijani", "causal-lm"]
+
+# Random seed
+seed: 42
+

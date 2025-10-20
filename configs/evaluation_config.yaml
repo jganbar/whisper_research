@@ -1,0 +1,45 @@
+# Evaluation Configuration
+
+# ASR Test Datasets
+datasets:
+  common_voice:
+    name: "mozilla-foundation/common_voice_11_0"
+    language: "az"
+    split: "test"
+    cache_dir: "./cache/eval_datasets"
+
+# Models to evaluate
+models:
+  baseline:
+    name: "openai/whisper-large-v3"
+    cache_dir: "./cache/models"
+  finetuned:
+    path: "./experiments/whisper_integrated"
+    
+# Transcription settings
+transcription:
+  language: "az"
+  task: "transcribe"
+  beam_size: 5
+  temperature: 0.0
+  batch_size: 16
+  
+# Metrics
+metrics:
+  - "wer"
+  - "cer"
+  compute_perplexity: true
+  
+# Output
+output:
+  results_dir: "./experiments/evaluation_results"
+  save_predictions: true
+  generate_report: true
+  report_format: ["json", "csv", "markdown"]
+
+# Statistical testing
+statistical_tests:
+  enabled: true
+  significance_level: 0.05
+  bootstrap_samples: 1000
+
