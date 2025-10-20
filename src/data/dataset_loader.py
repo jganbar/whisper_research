@@ -179,12 +179,16 @@ def prepare_dataset(
     Returns:
         List of preprocessed texts
     """
+    from tqdm import tqdm
+    
     logger.info("Preprocessing dataset...")
+    logger.info(f"Total examples to process: {len(dataset):,}")
     
     texts = []
     skipped = 0
     
-    for example in dataset:
+    # Add progress bar for better tracking
+    for example in tqdm(dataset, desc="Preprocessing", unit=" examples"):
         if text_column not in example:
             text_column = _find_text_column(example)
         
