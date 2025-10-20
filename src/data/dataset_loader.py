@@ -164,9 +164,10 @@ def prepare_dataset(
     min_length: int = 10,
     max_length: int = 10000,
     max_seq_length: int = 448,
+    num_proc: int = 16,
 ) -> List[str]:
     """
-    Prepare and preprocess the dataset.
+    Prepare and preprocess the dataset using multiprocessing.
     
     Args:
         dataset: HuggingFace dataset
@@ -175,23 +176,22 @@ def prepare_dataset(
         min_length: Minimum text length in characters
         max_length: Maximum text length in characters
         max_seq_length: Maximum sequence length for tokenization
+        num_proc: Number of processes to use for parallel processing
         
     Returns:
         List of preprocessed texts
     """
-    from tqdm import tqdm
-    
-    logger.info("Preprocessing dataset...")
+    logger.info("Preprocessing dataset with multiprocessing...")
     logger.info(f"Total examples to process: {len(dataset):,}")
+    logger.info(f"Using {num_proc} processes")
     
-    texts = []
-    skipped = 0
+    # Find text column
+    first_example = dataset[0]
+    if text_column not in first_example:
+        text_column = _find_text_column(first_example)
     
-    # Add progress bar for better tracking
-    for example in tqdm(dataset, desc="Preprocessing", unit=" examples"):
-        if text_column not in example:
-            text_column = _find_text_column(example)
-        
+    # Define preprocessing function for map
+    def preprocess_example(example):
         text = example[text_column]
         
         # Preprocess
@@ -203,19 +203,34 @@ def prepare_dataset(
         
         # Filter by length
         if len(processed_text) < min_length or len(processed_text) > max_length:
-            skipped += 1
-            continue
+            return {"processed_text": None, "keep": False}
         
-        # Check tokenized length
-        tokens = tokenizer.encode(processed_text)
-        if len(tokens) > max_seq_length:
-            chunks = _chunk_text(processed_text, tokenizer, max_seq_length)
-            texts.extend(chunks)
-        else:
-            texts.append(processed_text)
+        # Store processed text and mark to keep
+        return {"processed_text": processed_text, "keep": True}
     
-    logger.info(f"Prepared {len(texts)} text examples")
-    logger.info(f"Skipped {skipped} examples")
+    # Apply preprocessing with multiprocessing
+    logger.info("Step 1/2: Applying text preprocessing...")
+    processed_dataset = dataset.map(
+        preprocess_example,
+        num_proc=num_proc,
+        desc="Preprocessing texts"
+    )
+    
+    # Filter out skipped examples
+    processed_dataset = processed_dataset.filter(
+        lambda x: x["keep"],
+        num_proc=num_proc,
+        desc="Filtering examples"
+    )
+    
+    logger.info(f"After filtering: {len(processed_dataset):,} examples")
+    logger.info(f"Skipped: {len(dataset) - len(processed_dataset):,} examples")
+    
+    # Extract processed texts (this is fast, no heavy computation)
+    logger.info("Step 2/2: Extracting processed texts...")
+    texts = processed_dataset["processed_text"]
+    
+    logger.info(f"✓ Prepared {len(texts):,} text examples")
     
     return texts
 
