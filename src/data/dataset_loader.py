@@ -226,9 +226,13 @@ def prepare_dataset(
     logger.info(f"After filtering: {len(processed_dataset):,} examples")
     logger.info(f"Skipped: {len(dataset) - len(processed_dataset):,} examples")
     
-    # Extract processed texts (this is fast, no heavy computation)
-    logger.info("Step 2/2: Extracting processed texts...")
+    # Extract processed texts and convert to list (this is fast, no heavy computation)
+    logger.info("Step 2/2: Extracting processed texts and converting to list...")
     texts = processed_dataset["processed_text"]
+    
+    # Convert Arrow Column to Python list for proper serialization
+    if not isinstance(texts, list):
+        texts = list(texts)
     
     logger.info(f"✓ Prepared {len(texts):,} text examples")
     
