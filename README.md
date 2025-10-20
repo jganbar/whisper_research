@@ -41,11 +41,58 @@ whisper_research/
 
 ## Workflow
 
-1. **Extract Decoder**: Extract decoder from Whisper Large v3
-2. **Prepare Data**: Load and preprocess DOLLMA dataset
-3. **Train**: Unsupervised causal LM training
-4. **Integrate**: Re-integrate fine-tuned decoder into Whisper
-5. **Evaluate**: ASR benchmarking on Azerbaijani test sets
+### 1. Extract Decoder
+```bash
+python scripts/01_extract_decoder.py --device cuda
+```
+
+### 2. Prepare Data
+```bash
+python scripts/02_prepare_data.py
+```
+
+### 3. Train Decoder
+```bash
+python scripts/03_train_decoder.py --device cuda
+```
+
+**Monitor training with TensorBoard:**
+```bash
+tensorboard --logdir ./experiments/runs
+```
+Then open http://localhost:6006 in your browser.
+
+### 4. Integrate Decoder
+```bash
+python scripts/04_integrate_decoder.py \
+    --checkpoint ./experiments/decoder_training/best_model.pt
+```
+
+### 5. Evaluate
+```bash
+python scripts/05_evaluate.py \
+    --finetuned_model ./experiments/whisper_integrated
+```
+
+## Monitoring Training
+
+This project uses **TensorBoard** for experiment tracking:
+- Training and validation loss
+- Perplexity metrics
+- Learning rate schedules
+- Real-time training progress
+
+Start TensorBoard before or during training:
+```bash
+tensorboard --logdir ./experiments/runs
+```
+
+For W&B (optional), install separately:
+```bash
+uv pip install ".[wandb]"
+wandb login
+```
+And enable in `configs/training_config.yaml`.
 
 ## Dataset
 

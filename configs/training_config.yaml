@@ -57,13 +57,18 @@ training:
   
   # Logging
   logging_steps: 100
-  report_to: ["wandb"]
+  report_to: ["tensorboard"]
   
   # Output
   output_dir: "./experiments/decoder_training"
 
-# Weights & Biases
+# TensorBoard
+tensorboard:
+  log_dir: "./experiments/runs"
+  
+# Weights & Biases (optional)
 wandb:
+  enabled: false
   project: "whisper-decoder-azerbaijani"
   entity: null
   tags: ["whisper", "decoder", "azerbaijani", "causal-lm"]
