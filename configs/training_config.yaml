@@ -19,7 +19,7 @@ dataset:
 # Data loading
 dataloader:
   batch_size: 32
-  num_workers: 4
+  num_workers: 16  # Increased for powerful CPU
   pin_memory: true
   shuffle: true
   
