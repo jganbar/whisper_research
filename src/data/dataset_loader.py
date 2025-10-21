@@ -1,8 +1,8 @@
 """
 Dataset Loading Module
 
-This module handles loading and preparing the DOLLMA Azerbaijani dataset
-for training the Whisper decoder.
+This module handles loading datasets from HuggingFace Hub and creating
+PyTorch DataLoaders for training the Whisper decoder.
 """
 
 import logging
@@ -13,8 +13,6 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from datasets import load_dataset, Dataset as HFDataset
 from transformers import WhisperTokenizer
-
-from .preprocessing import preprocess_text
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +32,7 @@ class DataCollator:
             examples: List of examples with 'input_ids'
             
         Returns:
-            Batched tensors
+            Batched tensors with input_ids, attention_mask, and labels
         """
         input_ids = [ex["input_ids"] for ex in examples]
         
@@ -47,6 +45,7 @@ class DataCollator:
         )
         
         # For causal LM, labels are the same as input_ids
+        # Ignore padding tokens in loss computation
         labels = padded["input_ids"].clone()
         labels[labels == self.tokenizer.pad_token_id] = -100
         
@@ -66,6 +65,14 @@ class TextDataset(Dataset):
         tokenizer: WhisperTokenizer,
         max_length: int = 448,
     ):
+        """
+        Initialize the dataset.
+        
+        Args:
+            texts: List of text strings
+            tokenizer: Whisper tokenizer
+            max_length: Maximum sequence length
+        """
         self.texts = texts
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -74,9 +81,10 @@ class TextDataset(Dataset):
         return len(self.texts)
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Get a single example."""
+        """Get a single tokenized example."""
         text = self.texts[idx]
         
+        # Tokenize text
         encoded = self.tokenizer(
             text,
             truncation=True,
@@ -90,65 +98,51 @@ class TextDataset(Dataset):
         }
 
 
-def load_dollma_dataset(
-    dataset_name: str = "allmalab/DOLLMA",
+def load_text_dataset(
+    dataset_name: str,
     cache_dir: Optional[str] = None,
     streaming: bool = False,
-    split: Optional[str] = None,
-    configs: Optional[List[str]] = None,
+    split: str = "train",
+    text_column: str = "text",
 ) -> HFDataset:
     """
-    Load the DOLLMA dataset from HuggingFace.
-    
-    DOLLMA has multiple configs (subsets) for different Azerbaijani text sources.
-    This function can load one or all of them.
+    Load a text dataset from HuggingFace Hub.
     
     Args:
-        dataset_name: Name of the dataset on HuggingFace Hub
+        dataset_name: Name of the dataset on HuggingFace Hub (e.g., "username/dataset")
         cache_dir: Directory to cache the dataset
         streaming: Whether to use streaming mode
-        split: Specific split to load
-        configs: List of dataset configs to load. If None, loads all available configs.
-                Available: ['anl-news', 'azwiki', 'bhos', 'elite-blogs', 
-                           'elite-books', 'eqanun', 'mediocore-books', 'translated-enwiki']
+        split: Dataset split to load (e.g., "train", "test")
+        text_column: Name of the text column in the dataset
         
     Returns:
-        Loaded dataset (concatenated if multiple configs)
+        Loaded HuggingFace dataset
+        
+    Example:
+        >>> dataset = load_text_dataset("username/azerbaijani-text", text_column="text")
     """
     logger.info(f"Loading dataset: {dataset_name}")
-    
-    # Available DOLLMA configs
-    available_configs = [
-        'anl-news', 'azwiki', 'bhos', 'elite-blogs', 
-        'elite-books', 'eqanun', 'mediocore-books', 'translated-enwiki'
-    ]
-    
-    if configs is None:
-        configs = available_configs
-        logger.info(f"Loading all {len(configs)} DOLLMA subsets")
+    logger.info(f"  Split: {split}")
+    logger.info(f"  Text column: {text_column}")
     
     try:
-        datasets = []
-        for config in configs:
-            logger.info(f"  Loading config: {config}")
-            ds = load_dataset(
-                dataset_name,
-                config,
-                cache_dir=cache_dir,
-                streaming=streaming,
-                split=split or "train",
-            )
-            datasets.append(ds)
-            if not streaming:
-                logger.info(f"    Loaded {len(ds)} examples from {config}")
+        dataset = load_dataset(
+            dataset_name,
+            cache_dir=cache_dir,
+            streaming=streaming,
+            split=split,
+        )
         
-        # Concatenate all datasets
-        if len(datasets) > 1:
-            from datasets import concatenate_datasets
-            dataset = concatenate_datasets(datasets)
-            logger.info(f"Total dataset size: {len(dataset)} examples")
-        else:
-            dataset = datasets[0]
+        if not streaming:
+            logger.info(f"  Loaded {len(dataset)} examples")
+        
+        # Verify text column exists
+        if not streaming:
+            if text_column not in dataset.column_names:
+                raise ValueError(
+                    f"Text column '{text_column}' not found in dataset. "
+                    f"Available columns: {dataset.column_names}"
+                )
         
         return dataset
     
@@ -157,108 +151,65 @@ def load_dollma_dataset(
         raise
 
 
-def prepare_dataset(
+def prepare_texts(
     dataset: HFDataset,
-    tokenizer: WhisperTokenizer,
     text_column: str = "text",
-    min_length: int = 10,
-    max_length: int = 10000,
     max_seq_length: int = 448,
+    tokenizer: Optional[WhisperTokenizer] = None,
 ) -> List[str]:
     """
-    Prepare and preprocess the dataset.
+    Extract and prepare texts from the dataset.
     
     Args:
         dataset: HuggingFace dataset
-        tokenizer: Tokenizer to use
         text_column: Name of the text column
-        min_length: Minimum text length in characters
-        max_length: Maximum text length in characters
-        max_seq_length: Maximum sequence length for tokenization
+        max_seq_length: Maximum sequence length (for filtering)
+        tokenizer: Optional tokenizer for length checking
         
     Returns:
-        List of preprocessed texts
+        List of text strings
     """
-    logger.info("Preprocessing dataset...")
+    logger.info("Extracting texts from dataset...")
     
     texts = []
     skipped = 0
     
     for example in dataset:
-        if text_column not in example:
-            text_column = _find_text_column(example)
-        
         text = example[text_column]
         
-        # Preprocess
-        processed_text = preprocess_text(
-            text,
-            lowercase=False,
-            remove_punctuation=False,
-        )
-        
-        # Filter by length
-        if len(processed_text) < min_length or len(processed_text) > max_length:
+        # Basic validation
+        if not text or not isinstance(text, str):
             skipped += 1
             continue
         
-        # Check tokenized length
-        tokens = tokenizer.encode(processed_text)
-        if len(tokens) > max_seq_length:
-            chunks = _chunk_text(processed_text, tokenizer, max_seq_length)
-            texts.extend(chunks)
-        else:
-            texts.append(processed_text)
+        # Strip whitespace
+        text = text.strip()
+        
+        if len(text) == 0:
+            skipped += 1
+            continue
+        
+        # Optional: Check tokenized length if tokenizer provided
+        if tokenizer is not None:
+            tokens = tokenizer.encode(text)
+            if len(tokens) > max_seq_length:
+                # Truncate text approximately
+                approx_chars = int(len(text) * (max_seq_length / len(tokens)))
+                text = text[:approx_chars]
+        
+        texts.append(text)
     
-    logger.info(f"Prepared {len(texts)} text examples")
-    logger.info(f"Skipped {skipped} examples")
+    logger.info(f"Extracted {len(texts)} valid texts")
+    if skipped > 0:
+        logger.info(f"Skipped {skipped} invalid examples")
     
     return texts
 
 
-def _find_text_column(example: Dict[str, Any]) -> str:
-    """Find the text column in the dataset."""
-    candidates = ["text", "content", "sentence", "document"]
-    
-    for key in example.keys():
-        if key.lower() in candidates:
-            return key
-        if isinstance(example[key], str):
-            return key
-    
-    raise ValueError(f"Could not find text column. Available: {list(example.keys())}")
-
-
-def _chunk_text(
-    text: str,
-    tokenizer: WhisperTokenizer,
-    max_length: int,
-    overlap: int = 50,
-) -> List[str]:
-    """Chunk long text into smaller pieces."""
-    tokens = tokenizer.encode(text)
-    
-    chunks = []
-    start = 0
-    
-    while start < len(tokens):
-        end = min(start + max_length, len(tokens))
-        chunk_tokens = tokens[start:end]
-        
-        chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
-        chunks.append(chunk_text)
-        
-        start = end - overlap
-        
-        if start >= len(tokens):
-            break
-    
-    return chunks
-
-
 def create_dataloaders(
-    texts: List[str],
+    dataset: HFDataset,
     tokenizer: WhisperTokenizer,
+    text_column: str = "text",
     train_split: float = 0.95,
     batch_size: int = 32,
     max_length: int = 448,
@@ -267,38 +218,44 @@ def create_dataloaders(
     seed: int = 42,
 ) -> tuple[DataLoader, DataLoader]:
     """
-    Create train and validation dataloaders.
+    Create train and validation dataloaders from HuggingFace dataset.
     
     Args:
-        texts: List of preprocessed texts
-        tokenizer: Tokenizer to use
-        train_split: Proportion of data for training
+        dataset: HuggingFace dataset
+        tokenizer: Whisper tokenizer
+        text_column: Name of the text column
+        train_split: Proportion of data for training (0.0-1.0)
         batch_size: Batch size
         max_length: Maximum sequence length
         num_workers: Number of dataloader workers
-        pin_memory: Whether to pin memory
-        seed: Random seed
+        pin_memory: Whether to pin memory for faster GPU transfer
+        seed: Random seed for reproducibility
         
     Returns:
         Tuple of (train_dataloader, val_dataloader)
     """
+    logger.info("Creating dataloaders...")
+    
+    # Extract texts
+    texts = prepare_texts(dataset, text_column, max_length, tokenizer)
+    
+    # Shuffle and split
     import random
     random.seed(seed)
     random.shuffle(texts)
     
-    # Split into train and validation
     split_idx = int(len(texts) * train_split)
     train_texts = texts[:split_idx]
     val_texts = texts[split_idx:]
     
-    logger.info(f"Training examples: {len(train_texts)}")
-    logger.info(f"Validation examples: {len(val_texts)}")
+    logger.info(f"  Training examples: {len(train_texts)}")
+    logger.info(f"  Validation examples: {len(val_texts)}")
     
-    # Create datasets
+    # Create PyTorch datasets
     train_dataset = TextDataset(train_texts, tokenizer, max_length)
     val_dataset = TextDataset(val_texts, tokenizer, max_length)
     
-    # Create collator
+    # Create data collator
     collator = DataCollator(tokenizer, max_length)
     
     # Create dataloaders
@@ -320,40 +277,51 @@ def create_dataloaders(
         collate_fn=collator,
     )
     
+    logger.info(f"  Train batches: {len(train_dataloader)}")
+    logger.info(f"  Val batches: {len(val_dataloader)}")
+    
     return train_dataloader, val_dataloader
 
 
 def get_dataset_statistics(texts: List[str], tokenizer: WhisperTokenizer) -> Dict[str, Any]:
     """
-    Compute statistics about the dataset.
+    Compute basic statistics about the dataset.
     
     Args:
-        texts: List of texts
-        tokenizer: Tokenizer to use
+        texts: List of text strings
+        tokenizer: Tokenizer for token length computation
         
     Returns:
-        Dictionary of statistics
+        Dictionary with dataset statistics
     """
     import numpy as np
     
-    text_lengths = [len(text) for text in texts]
-    token_lengths = [len(tokenizer.encode(text)) for text in texts[:1000]]
+    logger.info("Computing dataset statistics...")
+    
+    # Character lengths
+    char_lengths = [len(text) for text in texts]
+    
+    # Token lengths (sample first 1000 for efficiency)
+    sample_size = min(1000, len(texts))
+    token_lengths = [len(tokenizer.encode(text)) for text in texts[:sample_size]]
     
     stats = {
         "num_examples": len(texts),
-        "text_length_mean": np.mean(text_lengths),
-        "text_length_std": np.std(text_lengths),
-        "text_length_min": np.min(text_lengths),
-        "text_length_max": np.max(text_lengths),
-        "token_length_mean": np.mean(token_lengths),
-        "token_length_std": np.std(token_lengths),
-        "token_length_min": np.min(token_lengths),
-        "token_length_max": np.max(token_lengths),
+        "char_length_mean": float(np.mean(char_lengths)),
+        "char_length_std": float(np.std(char_lengths)),
+        "char_length_min": int(np.min(char_lengths)),
+        "char_length_max": int(np.max(char_lengths)),
+        "token_length_mean": float(np.mean(token_lengths)),
+        "token_length_std": float(np.std(token_lengths)),
+        "token_length_min": int(np.min(token_lengths)),
+        "token_length_max": int(np.max(token_lengths)),
     }
     
     logger.info("Dataset Statistics:")
-    for key, value in stats.items():
-        logger.info(f"  {key}: {value:.2f}")
+    logger.info(f"  Total examples: {stats['num_examples']}")
+    logger.info(f"  Char length: {stats['char_length_mean']:.1f} ± {stats['char_length_std']:.1f} "
+                f"(min: {stats['char_length_min']}, max: {stats['char_length_max']})")
+    logger.info(f"  Token length: {stats['token_length_mean']:.1f} ± {stats['token_length_std']:.1f} "
+                f"(min: {stats['token_length_min']}, max: {stats['token_length_max']})")
     
     return stats
-

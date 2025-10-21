@@ -2,19 +2,14 @@
 
 # Dataset
 dataset:
-  name: "allmalab/DOLLMA"
+  name: "YOUR_HUGGINGFACE_USERNAME/YOUR_DATASET_NAME"  # Update with your dataset name
   cache_dir: "./cache/datasets"
   streaming: false
   train_split: 0.95
   val_split: 0.05
+  text_column: "text"  # Column name in your parquet file
+  max_seq_length: 448  # Maximum sequence length for Whisper decoder
   seed: 42
-  
-  # Text preprocessing
-  preprocessing:
-    lowercase: false
-    remove_punctuation: false
-    min_length: 10
-    max_length: 10000
 
 # Data loading
 dataloader:
