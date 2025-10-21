@@ -2,20 +2,20 @@
 """
 Script 3: Train Decoder on Azerbaijani Text
 
-This script trains the extracted decoder on DOLLMA dataset.
+This script trains the extracted Whisper decoder on text data from HuggingFace.
+The dataset should be pre-prepared and contain a 'text' column.
 """
 
 import argparse
 import logging
 import yaml
-import pickle
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.model import load_decoder, DecoderTrainer, TrainingConfig
-from src.data import create_dataloaders
+from src.data import load_text_dataset, create_dataloaders
 from transformers import WhisperTokenizer
 
 logging.basicConfig(
@@ -26,7 +26,15 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train Whisper decoder")
+    parser = argparse.ArgumentParser(
+        description="Train Whisper decoder on text data",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Example usage:
+  python scripts/03_train_decoder.py --device cuda
+  python scripts/03_train_decoder.py --config configs/training_config.yaml --device cuda
+        """
+    )
     parser.add_argument(
         "--config",
         type=str,
@@ -40,48 +48,58 @@ def main():
         help="Path to extracted decoder"
     )
     parser.add_argument(
-        "--texts_path",
-        type=str,
-        default="./cache/processed_texts.pkl",
-        help="Path to processed texts"
-    )
-    parser.add_argument(
         "--device",
         type=str,
         default="cuda",
-        help="Device to use"
+        choices=["cuda", "cpu", "mps"],
+        help="Device to use for training"
     )
     args = parser.parse_args()
     
-    # Load config
+    # Load configuration
+    logger.info("Loading configuration...")
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
     
-    logger.info("=" * 50)
-    logger.info("Step 3: Training Decoder")
-    logger.info("=" * 50)
+    logger.info("=" * 70)
+    logger.info("Step 3: Training Whisper Decoder on Text Data")
+    logger.info("=" * 70)
     
-    # Load decoder
+    # Load decoder and tokenizer
+    logger.info(f"\nLoading decoder from: {args.decoder_path}")
     decoder_lm, tokenizer = load_decoder(args.decoder_path, device=args.device)
+    logger.info("✓ Decoder loaded successfully")
     
-    # Load processed texts
-    with open(args.texts_path, 'rb') as f:
-        texts = pickle.load(f)
-    
-    logger.info(f"Loaded {len(texts)} text examples")
+    # Load dataset
+    dataset_config = config['dataset']
+    logger.info(f"\nLoading dataset: {dataset_config['name']}")
+    dataset = load_text_dataset(
+        dataset_name=dataset_config['name'],
+        cache_dir=dataset_config.get('cache_dir'),
+        streaming=dataset_config.get('streaming', False),
+        split='train',
+        text_column=dataset_config.get('text_column', 'text'),
+    )
+    logger.info("✓ Dataset loaded successfully")
     
     # Create dataloaders
+    logger.info("\nCreating dataloaders...")
     dataloader_config = config['dataloader']
     train_dataloader, val_dataloader = create_dataloaders(
-        texts=texts,
+        dataset=dataset,
         tokenizer=tokenizer,
-        train_split=config['dataset']['train_split'],
+        text_column=dataset_config.get('text_column', 'text'),
+        train_split=dataset_config.get('train_split', 0.95),
         batch_size=dataloader_config['batch_size'],
-        num_workers=dataloader_config['num_workers'],
-        seed=config['seed'],
+        max_length=dataset_config.get('max_seq_length', 448),
+        num_workers=dataloader_config.get('num_workers', 4),
+        pin_memory=dataloader_config.get('pin_memory', True),
+        seed=dataset_config.get('seed', 42),
     )
+    logger.info("✓ Dataloaders created successfully")
     
-    # Create training config
+    # Create training configuration
+    logger.info("\nSetting up training configuration...")
     training_config = config['training']
     tensorboard_config = config.get('tensorboard', {})
     wandb_config = config.get('wandb', {})
@@ -93,8 +111,8 @@ def main():
         num_epochs=training_config['num_epochs'],
         gradient_accumulation_steps=training_config['gradient_accumulation_steps'],
         max_grad_norm=training_config['max_grad_norm'],
-        fp16=training_config['fp16'],
-        bf16=training_config['bf16'],
+        fp16=training_config.get('fp16', False),
+        bf16=training_config.get('bf16', True),
         save_steps=training_config['save_steps'],
         eval_steps=training_config['eval_steps'],
         logging_steps=training_config['logging_steps'],
@@ -103,24 +121,63 @@ def main():
         tensorboard_dir=tensorboard_config.get('log_dir', './experiments/runs'),
         log_to_wandb=wandb_config.get('enabled', False),
         device=args.device,
-        seed=config['seed'],
+        seed=config.get('seed', 42),
     )
     
+    # Display training settings
+    logger.info("\n" + "=" * 70)
+    logger.info("Training Configuration:")
+    logger.info("=" * 70)
+    logger.info(f"  Device: {args.device}")
+    logger.info(f"  Learning rate: {train_cfg.learning_rate}")
+    logger.info(f"  Batch size: {dataloader_config['batch_size']}")
+    logger.info(f"  Gradient accumulation: {train_cfg.gradient_accumulation_steps}")
+    logger.info(f"  Effective batch size: {dataloader_config['batch_size'] * train_cfg.gradient_accumulation_steps}")
+    logger.info(f"  Epochs: {train_cfg.num_epochs}")
+    logger.info(f"  Mixed precision: {'bf16' if train_cfg.bf16 else 'fp16' if train_cfg.fp16 else 'fp32'}")
+    logger.info(f"  Output directory: {train_cfg.output_dir}")
+    logger.info(f"  TensorBoard: {train_cfg.log_to_tensorboard}")
+    if train_cfg.log_to_tensorboard:
+        logger.info(f"  TensorBoard dir: {train_cfg.tensorboard_dir}")
+    logger.info("=" * 70)
+    
     # Create trainer
+    logger.info("\nInitializing trainer...")
     trainer = DecoderTrainer(
         model=decoder_lm,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
         config=train_cfg,
     )
+    logger.info("✓ Trainer initialized")
     
-    # Train
-    trainer.train()
+    # Start training
+    logger.info("\n" + "=" * 70)
+    logger.info("Starting Training")
+    logger.info("=" * 70)
     
-    logger.info("\n✓ Training completed!")
-    logger.info(f"  Best validation loss: {trainer.best_val_loss:.4f}")
+    if train_cfg.log_to_tensorboard:
+        logger.info(f"\n💡 Monitor training with TensorBoard:")
+        logger.info(f"   tensorboard --logdir {train_cfg.tensorboard_dir}")
+        logger.info(f"   Then open http://localhost:6006 in your browser\n")
+    
+    try:
+        trainer.train()
+        
+        logger.info("\n" + "=" * 70)
+        logger.info("✓ Training Completed Successfully!")
+        logger.info("=" * 70)
+        logger.info(f"  Best validation loss: {trainer.best_val_loss:.4f}")
+        logger.info(f"  Best model saved to: {train_cfg.output_dir}/best_model.pt")
+        logger.info("=" * 70)
+        
+    except KeyboardInterrupt:
+        logger.info("\n\nTraining interrupted by user")
+        logger.info("Checkpoint saved, you can resume training later")
+    except Exception as e:
+        logger.error(f"\n\nTraining failed with error: {e}")
+        raise
 
 
 if __name__ == "__main__":
     main()
-

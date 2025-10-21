@@ -42,16 +42,21 @@ whisper_research/
 ## Workflow
 
 ### 1. Extract Decoder
+Extract the decoder component from Whisper Large v3:
 ```bash
 python scripts/01_extract_decoder.py --device cuda
 ```
 
-### 2. Prepare Data
-```bash
-python scripts/02_prepare_data.py
+### 2. Configure Dataset
+Update `configs/training_config.yaml` with your HuggingFace dataset name:
+```yaml
+dataset:
+  name: "YOUR_USERNAME/YOUR_DATASET_NAME"
+  text_column: "text"
 ```
 
 ### 3. Train Decoder
+Train the decoder on your text dataset:
 ```bash
 python scripts/03_train_decoder.py --device cuda
 ```
@@ -63,12 +68,14 @@ tensorboard --logdir ./experiments/runs
 Then open http://localhost:6006 in your browser.
 
 ### 4. Integrate Decoder
+Re-integrate the trained decoder back into Whisper:
 ```bash
 python scripts/04_integrate_decoder.py \
     --checkpoint ./experiments/decoder_training/best_model.pt
 ```
 
 ### 5. Evaluate
+Evaluate the improved model on ASR tasks:
 ```bash
 python scripts/05_evaluate.py \
     --finetuned_model ./experiments/whisper_integrated
@@ -96,7 +103,16 @@ And enable in `configs/training_config.yaml`.
 
 ## Dataset
 
-[DOLLMA](https://huggingface.co/datasets/allmalab/DOLLMA) - Large Azerbaijani text corpus
+This project is designed to work with any HuggingFace text dataset that has a `text` column. Simply configure your dataset name in `configs/training_config.yaml`.
+
+**Requirements:**
+- Dataset must be hosted on HuggingFace Hub
+- Must contain a `text` column with the training data
+- Can be in any format (parquet, CSV, JSON, etc.)
+
+**Example datasets:**
+- [DOLLMA](https://huggingface.co/datasets/allmalab/DOLLMA) - Large Azerbaijani text corpus
+- Your custom dataset: `username/dataset-name`
 
 ## License
 
