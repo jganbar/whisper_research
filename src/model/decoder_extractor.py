@@ -103,12 +103,8 @@ class WhisperDecoderLM(nn.Module):
         # Combine token and positional embeddings
         hidden_states = inputs_embeds + position_embeds
         
-        # Create causal attention mask
-        if attention_mask is not None:
-            attention_mask = _prepare_4d_causal_attention_mask(
-                attention_mask, input_ids.shape, hidden_states.dtype, device
-            )
-        
+        # Let HF Whisper create its own efficient causal mask (Flash/SFDP compatible)
+        # We pass the 2D attention_mask directly to unlock fused kernels.
         # Pass through decoder (decoder-only mode, no encoder)
         decoder_outputs = self.decoder(
             inputs_embeds=hidden_states,
@@ -144,40 +140,8 @@ class WhisperDecoderLM(nn.Module):
         }
 
 
-def _prepare_4d_causal_attention_mask(
-    attention_mask: torch.Tensor,
-    input_shape: tuple,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> torch.Tensor:
-    """
-    Create a 4D causal attention mask from a 2D mask.
-    
-    Args:
-        attention_mask: 2D attention mask [batch_size, seq_len]
-        input_shape: Shape of input (batch_size, seq_len)
-        dtype: Data type for the mask
-        device: Device to create the mask on
-        
-    Returns:
-        4D causal attention mask [batch_size, 1, seq_len, seq_len]
-    """
-    batch_size, seq_len = input_shape
-    
-    # Create causal mask
-    causal_mask = torch.triu(
-        torch.ones((seq_len, seq_len), dtype=dtype, device=device) * float('-inf'),
-        diagonal=1
-    )
-    causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
-    
-    # Combine with attention mask if provided
-    if attention_mask is not None:
-        expanded_mask = attention_mask[:, None, None, :].to(dtype)
-        inverted_mask = (1.0 - expanded_mask) * torch.finfo(dtype).min
-        causal_mask = causal_mask + inverted_mask
-    
-    return causal_mask
+## Note: We intentionally avoid building a custom 4D causal mask to allow
+## PyTorch's scaled_dot_product_attention (Flash/SFDP) fast paths.
 
 
 def extract_decoder(
