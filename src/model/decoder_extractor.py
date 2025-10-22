@@ -283,13 +283,20 @@ def load_decoder(
     
     # Load model checkpoint
     checkpoint_path = os.path.join(model_path, "decoder_lm.pt")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
     
     # Reconstruct config
     config = WhisperConfig.from_dict(checkpoint["config"])
     
-    # Extract base decoder structure (loads on device)
-    decoder_lm, _ = extract_decoder(device=device)
+    # Rebuild decoder structure without downloading the full pretrained weights
+    base_model = WhisperForConditionalGeneration(config)
+    decoder_lm = WhisperDecoderLM(
+        decoder=base_model.model.decoder,
+        embed_tokens=base_model.model.decoder.embed_tokens,
+        embed_positions=base_model.model.decoder.embed_positions,
+        config=config,
+    )
+    del base_model
     
     # Load fine-tuned weights
     decoder_lm.load_state_dict(checkpoint["model_state_dict"])
@@ -301,4 +308,3 @@ def load_decoder(
     logger.info(f"Model moved to device: {device}")
     
     return decoder_lm, tokenizer
-

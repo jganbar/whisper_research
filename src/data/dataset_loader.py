@@ -9,6 +9,7 @@ import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 from datasets import load_dataset, Dataset as HFDataset
@@ -76,62 +77,42 @@ class TextDataset(Dataset):
         self.max_length = max_length
         
         # PRE-TOKENIZE with EFFICIENT STORAGE (numpy arrays, not Python lists!)
-        print(f"Pre-tokenizing {len(texts):,} texts with EFFICIENT storage...")
+        logger.info(f"Pre-tokenizing {len(texts):,} texts with Whisper tokenizer...")
         from tqdm import tqdm
-        import numpy as np
         
-        # Use tiktoken directly for MASSIVE speedup (C++ vs Python)
-        try:
-            import tiktoken
-            use_tiktoken = True
-            tiktoken_enc = tiktoken.get_encoding("gpt2")
-            print("✓ Using tiktoken (C++ tokenizer) - ULTRA FAST!")
-        except:
-            use_tiktoken = False
-            print("⚠ tiktoken not available, using HuggingFace tokenizer")
+        # Store as numpy arrays (much more efficient than Python lists of ints)
+        batch_size = 4096 if len(texts) > 10_000 else 1024
+        all_input_ids: List[np.ndarray] = []
+        all_lengths: List[int] = []
         
-        # EFFICIENT: Store as numpy arrays (10x less RAM than Python lists!)
-        all_input_ids = []
-        all_lengths = []
-        
-        if use_tiktoken:
-            print("Tokenizing all texts with tiktoken...")
-            for text in tqdm(texts, desc="Tokenizing"):
-                token_ids = tiktoken_enc.encode(text, allowed_special=set())
-                if len(token_ids) > self.max_length:
-                    token_ids = token_ids[:self.max_length]
-                
-                all_input_ids.append(np.array(token_ids, dtype=np.int32))
-                all_lengths.append(len(token_ids))
-        else:
-            # Fallback: HuggingFace tokenizer with batching
-            batch_size = 10000
-            print(f"Tokenizing in batches of {batch_size}...")
+        for start in tqdm(
+            range(0, len(texts), batch_size),
+            desc="Tokenizing",
+            disable=len(texts) < 1000,
+        ):
+            batch_texts = texts[start:start + batch_size]
+            encoded_batch = self.tokenizer(
+                batch_texts,
+                truncation=True,
+                max_length=self.max_length,
+                padding=False,
+                return_attention_mask=False,
+            )
             
-            for i in tqdm(range(0, len(texts), batch_size), desc="Tokenizing"):
-                batch_texts = texts[i:i+batch_size]
-                encoded_batch = self.tokenizer(
-                    batch_texts,
-                    truncation=True,
-                    max_length=self.max_length,
-                    padding=False,
-                    return_tensors=None,
-                )
-                
-                for token_ids in encoded_batch["input_ids"]:
-                    all_input_ids.append(np.array(token_ids, dtype=np.int32))
-                    all_lengths.append(len(token_ids))
+            for token_ids in encoded_batch["input_ids"]:
+                token_array = np.asarray(token_ids, dtype=np.int32)
+                all_input_ids.append(token_array)
+                all_lengths.append(int(token_array.size))
         
-        # Store as list of numpy arrays (much more efficient than Python lists of ints)
         self.input_ids = all_input_ids
-        self.lengths = np.array(all_lengths, dtype=np.int32)
+        self.lengths = np.asarray(all_lengths, dtype=np.int32)
         
-        print(f"✓ Pre-tokenization complete! {len(self.input_ids):,} samples ready.")
+        logger.info(f"✓ Pre-tokenization complete: {len(self.input_ids):,} samples.")
         
         # Calculate memory usage
-        total_tokens = np.sum(self.lengths)
+        total_tokens = int(self.lengths.sum()) if len(self.lengths) else 0
         memory_mb = (total_tokens * 4) / (1024**2)  # int32 = 4 bytes
-        print(f"  Memory usage: ~{memory_mb:.1f} MB (efficient numpy storage)")
+        logger.info(f"  Memory usage: ~{memory_mb:.1f} MB (numpy int32 storage)")
     
     def __len__(self) -> int:
         return len(self.input_ids)
@@ -315,62 +296,97 @@ def create_dataloaders(
     """
     logger.info("Creating dataloaders...")
     
-    # Extract texts
-    texts = prepare_texts(dataset, text_column, max_length, tokenizer)
+    try:
+        total_available = len(dataset)
+    except TypeError as exc:
+        raise ValueError(
+            "Dataset length is undefined (streaming mode is not supported for pre-tokenized dataloaders)."
+        ) from exc
     
-    # Shuffle first
-    import random
-    random.seed(seed)
-    random.shuffle(texts)
+    if total_available == 0:
+        raise ValueError("Dataset is empty. Please check the dataset configuration.")
     
-    # Calculate split indices based on percentages of TOTAL dataset
-    total_samples = len(texts)
-    train_samples = int(total_samples * train_split)
-    val_samples = int(total_samples * val_split)
+    if max_train_samples is not None or max_val_samples is not None:
+        train_target = (
+            max_train_samples
+            if max_train_samples is not None
+            else int(total_available * train_split)
+        )
+        val_target = (
+            max_val_samples
+            if max_val_samples is not None
+            else int(total_available * val_split)
+        )
+    else:
+        train_target = int(total_available * train_split)
+        val_target = int(total_available * val_split)
     
-    # Apply max_samples limits if specified
-    if max_train_samples is not None:
-        train_samples = min(train_samples, max_train_samples)
-    if max_val_samples is not None:
-        val_samples = min(val_samples, max_val_samples)
+    train_target = min(train_target, total_available)
+    remaining = max(total_available - train_target, 0)
+    val_target = min(val_target, remaining)
     
-    # Split the data
-    train_texts = texts[:train_samples]
-    val_texts = texts[train_samples:train_samples + val_samples]
+    if train_target == 0:
+        raise ValueError(
+            "Computed zero training samples. Reduce validation split or increase max_train_samples."
+        )
     
-    logger.info(f"  Total available samples: {total_samples:,}")
+    logger.info(f"  Total available samples: {total_available:,}")
+    logger.info(f"  Sampling {train_target:,} for training and {val_target:,} for validation before preprocessing")
+    
+    shuffled_dataset = dataset.shuffle(seed=seed)
+    train_subset = shuffled_dataset.select(range(train_target))
+    val_subset = (
+        shuffled_dataset.select(range(train_target, train_target + val_target))
+        if val_target > 0
+        else shuffled_dataset.select([])
+    )
+    
+    train_texts = prepare_texts(train_subset, text_column, max_length, tokenizer)
+    if not train_texts:
+        raise ValueError("No training texts available after preprocessing. Check dataset preprocessing rules.")
+    
+    val_texts = prepare_texts(val_subset, text_column, max_length, tokenizer) if val_target > 0 else []
+    if val_target > 0 and not val_texts:
+        raise ValueError(
+            "Validation split produced zero samples after preprocessing. "
+            "Please adjust filtering rules or reduce max_train_samples."
+        )
+    
     logger.info(f"  Training examples: {len(train_texts):,}")
     logger.info(f"  Validation examples: {len(val_texts):,}")
     
     # Create PyTorch datasets
     train_dataset = TextDataset(train_texts, tokenizer, max_length)
-    val_dataset = TextDataset(val_texts, tokenizer, max_length)
+    val_dataset = TextDataset(val_texts, tokenizer, max_length) if len(val_texts) > 0 else TextDataset([], tokenizer, max_length)
     
     # Create data collator
     collator = DataCollator(tokenizer, max_length)
     
-    # Create dataloaders with minimal workers (data is pre-tokenized!)
-    train_dataloader = DataLoader(
-        train_dataset,
+    # Create dataloaders
+    train_loader_kwargs = dict(
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
         pin_memory=pin_memory,
         collate_fn=collator,
-        persistent_workers=False,  # Don't keep workers alive (saves memory)
-        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=False,
     )
+    if num_workers > 0:
+        train_loader_kwargs["prefetch_factor"] = 2
     
-    val_dataloader = DataLoader(
-        val_dataset,
+    val_loader_kwargs = dict(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=pin_memory,
         collate_fn=collator,
-        persistent_workers=False,  # Don't keep workers alive (saves memory)
-        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=False,
     )
+    if num_workers > 0:
+        val_loader_kwargs["prefetch_factor"] = 2
+    
+    train_dataloader = DataLoader(train_dataset, **train_loader_kwargs)
+    val_dataloader = DataLoader(val_dataset, **val_loader_kwargs)
     
     logger.info(f"  Train batches: {len(train_dataloader):,}")
     logger.info(f"  Val batches: {len(val_dataloader):,}")
