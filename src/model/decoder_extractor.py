@@ -109,12 +109,10 @@ class WhisperDecoderLM(nn.Module):
                 attention_mask, input_ids.shape, hidden_states.dtype, device
             )
         
-        # Pass through decoder (without encoder)
+        # Pass through decoder (decoder-only mode, no encoder)
         decoder_outputs = self.decoder(
-            hidden_states=hidden_states,
+            inputs_embeds=hidden_states,
             attention_mask=attention_mask,
-            encoder_hidden_states=None,
-            encoder_attention_mask=None,
             use_cache=False,
             return_dict=True,
         )
@@ -185,7 +183,7 @@ def _prepare_4d_causal_attention_mask(
 def extract_decoder(
     model_name: str = "openai/whisper-large-v3",
     cache_dir: Optional[str] = None,
-    device: str = "cpu",
+    device: str = "cuda",
 ) -> tuple[WhisperDecoderLM, WhisperTokenizer]:
     """
     Extract the decoder from a Whisper model and create a standalone LM.
@@ -206,10 +204,11 @@ def extract_decoder(
         cache_dir=cache_dir,
     )
     
-    # Load tokenizer
+    # Load FAST tokenizer (Rust-based, 10-100x faster!)
     tokenizer = WhisperTokenizer.from_pretrained(
         model_name,
         cache_dir=cache_dir,
+        use_fast=True,
     )
     
     # Extract decoder components
@@ -265,7 +264,7 @@ def save_decoder(
 
 def load_decoder(
     model_path: str,
-    device: str = "cpu",
+    device: str = "cuda",
 ) -> tuple[WhisperDecoderLM, WhisperTokenizer]:
     """
     Load a saved decoder model and tokenizer.
@@ -279,8 +278,8 @@ def load_decoder(
     """
     logger.info(f"Loading decoder from {model_path}")
     
-    # Load tokenizer
-    tokenizer = WhisperTokenizer.from_pretrained(model_path)
+    # Load FAST tokenizer (Rust-based, 10-100x faster!)
+    tokenizer = WhisperTokenizer.from_pretrained(model_path, use_fast=True)
     
     # Load model checkpoint
     checkpoint_path = os.path.join(model_path, "decoder_lm.pt")
@@ -289,13 +288,17 @@ def load_decoder(
     # Reconstruct config
     config = WhisperConfig.from_dict(checkpoint["config"])
     
-    # Extract base decoder structure
+    # Extract base decoder structure (loads on device)
     decoder_lm, _ = extract_decoder(device=device)
     
     # Load fine-tuned weights
     decoder_lm.load_state_dict(checkpoint["model_state_dict"])
     
+    # CRITICAL: Move model to device AFTER loading weights!
+    decoder_lm = decoder_lm.to(device)
+    
     logger.info(f"Loaded decoder model from {model_path}")
+    logger.info(f"Model moved to device: {device}")
     
     return decoder_lm, tokenizer
 

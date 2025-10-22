@@ -2,19 +2,21 @@
 
 # Dataset
 dataset:
-  name: "YOUR_HUGGINGFACE_USERNAME/YOUR_DATASET_NAME"  # Update with your dataset name
+  name: "MergenAI/DOLLMA_v1"  # DOLLMA v1 Azerbaijani text corpus (parquet format)
   cache_dir: "./cache/datasets"
   streaming: false
-  train_split: 0.95
-  val_split: 0.05
+  train_split: 0.9   # Use 90% for training
+  val_split: 0.1     # Use 10% for validation
+  max_train_samples: 50000  # FAST TRAINING: Only 50K samples (~1 hour on RTX 4090)
+  max_val_samples: 5000     # 5K validation samples
   text_column: "text"  # Column name in your parquet file
-  max_seq_length: 448  # Maximum sequence length for Whisper decoder
+  max_seq_length: 448  # Whisper's FULL context (optimal for language modeling)
   seed: 42
 
-# Data loading
+# Data loading (OPTIMIZED for RTX 4090: Max GPU utilization!)
 dataloader:
-  batch_size: 32
-  num_workers: 4
+  batch_size: 96  # Larger batch for better GPU utilization (448 seq * 96 batch = 43K tokens)
+  num_workers: 2  # CRITICAL: Low workers to avoid memory overhead (pre-tokenized = fast anyway!)
   pin_memory: true
   shuffle: true
   
@@ -22,36 +24,36 @@ dataloader:
 training:
   # Optimizer
   optimizer: "adamw"
-  learning_rate: 5.0e-5
+  learning_rate: 1.0e-4  # Balanced for large batch (512) and language adaptation
   weight_decay: 0.01
   
   # Learning rate schedule
   lr_scheduler: "cosine"
-  warmup_steps: 1000
+  warmup_steps: 1000  # Longer warmup for stable training
   
   # Training duration
-  num_epochs: 3
+  num_epochs: 1  # Quick training for testing
   max_steps: -1
   
   # Gradient settings
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 4  # 96 * 4 = 384 effective batch size (faster updates)
   max_grad_norm: 1.0
   
   # Mixed precision
   fp16: false
   bf16: true
   
-  # Checkpointing
+  # Checkpointing (Less frequent for SPEED)
   save_strategy: "steps"
-  save_steps: 1000
-  save_total_limit: 3
+  save_steps: 500  # Save every 500 steps (less I/O = faster)
+  save_total_limit: 2
   
-  # Evaluation
+  # Evaluation (Less frequent for SPEED)
   eval_strategy: "steps"
-  eval_steps: 500
+  eval_steps: 250  # Eval every 250 steps
   
-  # Logging
-  logging_steps: 100
+  # Logging (Frequent for monitoring)
+  logging_steps: 10  # Log every 10 steps
   report_to: ["tensorboard"]
   
   # Output

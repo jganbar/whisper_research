@@ -183,8 +183,8 @@ class DecoderTrainer:
             for step, batch in enumerate(progress_bar):
                 batch = {k: v.to(self.config.device) for k, v in batch.items()}
                 
-                # Forward pass with mixed precision
-                with torch.cuda.amp.autocast(enabled=self.config.fp16 or self.config.bf16, dtype=torch.bfloat16 if self.config.bf16 else torch.float16):
+                # Forward pass with mixed precision (updated to avoid FutureWarning)
+                with torch.amp.autocast('cuda', enabled=self.config.fp16 or self.config.bf16, dtype=torch.bfloat16 if self.config.bf16 else torch.float16):
                     outputs = self.model(
                         input_ids=batch["input_ids"],
                         attention_mask=batch["attention_mask"],

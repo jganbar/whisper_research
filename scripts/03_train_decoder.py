@@ -10,7 +10,11 @@ import argparse
 import logging
 import yaml
 import sys
+import warnings
 from pathlib import Path
+
+# Suppress all warnings for cleaner output
+warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -65,10 +69,31 @@ Example usage:
     logger.info("Step 3: Training Whisper Decoder on Text Data")
     logger.info("=" * 70)
     
+    # Verify CUDA is available and working
+    import torch
+    if args.device == "cuda":
+        if not torch.cuda.is_available():
+            logger.error("❌ CUDA requested but not available!")
+            logger.error("   Please check your PyTorch installation and GPU drivers")
+            sys.exit(1)
+        
+        logger.info(f"\n🚀 CUDA Device Check:")
+        logger.info(f"   CUDA Available: {torch.cuda.is_available()}")
+        logger.info(f"   CUDA Device: {torch.cuda.get_device_name(0)}")
+        logger.info(f"   CUDA Version: {torch.version.cuda}")
+        logger.info(f"   PyTorch Version: {torch.__version__}")
+        logger.info(f"   Device Count: {torch.cuda.device_count()}")
+        
+        # Set CUDA device if CUDA_VISIBLE_DEVICES is set
+        import os
+        if 'CUDA_VISIBLE_DEVICES' in os.environ:
+            logger.info(f"   CUDA_VISIBLE_DEVICES: {os.environ['CUDA_VISIBLE_DEVICES']}")
+    
     # Load decoder and tokenizer
     logger.info(f"\nLoading decoder from: {args.decoder_path}")
     decoder_lm, tokenizer = load_decoder(args.decoder_path, device=args.device)
     logger.info("✓ Decoder loaded successfully")
+    logger.info(f"   Model on device: {next(decoder_lm.parameters()).device}")
     
     # Load dataset
     dataset_config = config['dataset']
@@ -90,6 +115,9 @@ Example usage:
         tokenizer=tokenizer,
         text_column=dataset_config.get('text_column', 'text'),
         train_split=dataset_config.get('train_split', 0.95),
+        val_split=dataset_config.get('val_split', 0.05),
+        max_train_samples=dataset_config.get('max_train_samples', None),
+        max_val_samples=dataset_config.get('max_val_samples', None),
         batch_size=dataloader_config['batch_size'],
         max_length=dataset_config.get('max_seq_length', 448),
         num_workers=dataloader_config.get('num_workers', 4),
