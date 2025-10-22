@@ -75,6 +75,8 @@ Example usage:
     logger.info("Step 3: Training Whisper Decoder on Text Data")
     logger.info("=" * 70)
     
+    training_config = config['training']
+    
     # Verify CUDA is available and working
     import torch
     if args.device == "cuda":
@@ -94,10 +96,57 @@ Example usage:
         import os
         if 'CUDA_VISIBLE_DEVICES' in os.environ:
             logger.info(f"   CUDA_VISIBLE_DEVICES: {os.environ['CUDA_VISIBLE_DEVICES']}")
+        
+        if training_config.get('allow_tf32', True):
+            try:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                torch.set_float32_matmul_precision("high")
+                logger.info("   TF32 matrix operations enabled.")
+            except Exception as exc:
+                logger.warning(f"Failed to enable TF32 precision: {exc}")
+        if training_config.get('enable_flash_sdp', True):
+            flash_enabled = False
+            try:
+                if hasattr(torch.backends.cuda, "enable_flash_sdp"):
+                    torch.backends.cuda.enable_flash_sdp(True)
+                    flash_enabled = True
+                if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
+                    torch.backends.cuda.enable_mem_efficient_sdp(True)
+                if hasattr(torch.backends.cuda, "enable_math_sdp"):
+                    torch.backends.cuda.enable_math_sdp(True)
+            except Exception as exc:
+                logger.warning(f"Failed to configure scaled-dot-product attention kernels: {exc}")
+            else:
+                if flash_enabled:
+                    logger.info("   Flash SDP kernels enabled.")
+        compile_requested = training_config.get('torch_compile', False)
+    else:
+        compile_requested = False
     
     # Load decoder and tokenizer
     logger.info(f"\nLoading decoder from: {args.decoder_path}")
     decoder_lm, tokenizer = load_decoder(args.decoder_path, device=args.device)
+    
+    if training_config.get('gradient_checkpointing', True):
+        if decoder_lm.enable_gradient_checkpointing():
+            logger.info("✓ Gradient checkpointing enabled.")
+        else:
+            logger.warning("Gradient checkpointing could not be enabled; continuing without it.")
+    
+    compiled_model = decoder_lm
+    if compile_requested and hasattr(torch, "compile"):
+        compile_mode = training_config.get('torch_compile_mode', 'default')
+        compile_fullgraph = training_config.get('torch_compile_fullgraph', False)
+        try:
+            compiled_model = torch.compile(decoder_lm, mode=compile_mode, fullgraph=compile_fullgraph)
+            logger.info(f"✓ torch.compile applied (mode={compile_mode}, fullgraph={compile_fullgraph}).")
+        except Exception as exc:
+            logger.warning(f"torch.compile failed, continuing with eager mode: {exc}")
+            compiled_model = decoder_lm
+    elif compile_requested:
+        logger.warning("torch.compile requested but not available in this PyTorch build.")
+    decoder_lm = compiled_model
     logger.info("✓ Decoder loaded successfully")
     logger.info(f"   Model on device: {next(decoder_lm.parameters()).device}")
     
@@ -135,7 +184,6 @@ Example usage:
     
     # Create training configuration
     logger.info("\nSetting up training configuration...")
-    training_config = config['training']
     tensorboard_config = config.get('tensorboard', {})
     wandb_config = config.get('wandb', {})
     
@@ -162,6 +210,12 @@ Example usage:
         log_to_wandb=wandb_config.get('enabled', False),
         device=args.device,
         seed=config.get('seed', 42),
+        gradient_checkpointing=training_config.get('gradient_checkpointing', True),
+        allow_tf32=training_config.get('allow_tf32', True),
+        enable_flash_sdp=training_config.get('enable_flash_sdp', True),
+        torch_compile=training_config.get('torch_compile', False),
+        torch_compile_mode=training_config.get('torch_compile_mode', 'default'),
+        torch_compile_fullgraph=training_config.get('torch_compile_fullgraph', False),
     )
     
     # Display training settings
@@ -175,6 +229,10 @@ Example usage:
     logger.info(f"  Effective batch size: {dataloader_config['batch_size'] * train_cfg.gradient_accumulation_steps}")
     logger.info(f"  Epochs: {train_cfg.num_epochs}")
     logger.info(f"  Mixed precision: {'bf16' if train_cfg.bf16 else 'fp16' if train_cfg.fp16 else 'fp32'}")
+    logger.info(f"  Gradient checkpointing: {train_cfg.gradient_checkpointing}")
+    logger.info(f"  TF32 enabled: {train_cfg.allow_tf32}")
+    logger.info(f"  Flash SDP: {train_cfg.enable_flash_sdp}")
+    logger.info(f"  torch.compile: {train_cfg.torch_compile}")
     logger.info(f"  Output directory: {train_cfg.output_dir}")
     logger.info(f"  TensorBoard: {train_cfg.log_to_tensorboard}")
     if train_cfg.log_to_tensorboard:

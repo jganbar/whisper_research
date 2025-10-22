@@ -50,6 +50,7 @@ class WhisperDecoderLM(nn.Module):
         self.decoder = decoder
         self.embed_tokens = embed_tokens
         self.embed_positions = embed_positions
+        self.gradient_checkpointing = False
         
         # Language modeling head
         self.lm_head = nn.Linear(
@@ -138,6 +139,36 @@ class WhisperDecoderLM(nn.Module):
             "logits": logits,
             "hidden_states": hidden_states,
         }
+
+    def enable_gradient_checkpointing(self):
+        """Enable gradient checkpointing for the underlying decoder if supported."""
+        enabled = False
+        if hasattr(self.decoder, "gradient_checkpointing_enable"):
+            try:
+                self.decoder.gradient_checkpointing_enable()
+                enabled = True
+            except Exception as exc:  # pragma: no cover - defensive
+                logging.getLogger(__name__).warning(
+                    "Failed to enable gradient checkpointing via gradient_checkpointing_enable: %s",
+                    exc,
+                )
+        if not enabled and hasattr(self.decoder, "gradient_checkpointing"):
+            try:
+                self.decoder.gradient_checkpointing = True
+                enabled = True
+            except Exception as exc:  # pragma: no cover
+                logger.warning(
+                    "Failed to set decoder.gradient_checkpointing=True: %s",
+                    exc,
+                )
+        if not enabled:
+            logger.warning(
+                "Gradient checkpointing not supported for decoder type %s.", type(self.decoder)
+            )
+            return False
+        self.gradient_checkpointing = True
+        logger.info("Gradient checkpointing enabled on Whisper decoder.")
+        return True
 
 
 ## Note: We intentionally avoid building a custom 4D causal mask to allow

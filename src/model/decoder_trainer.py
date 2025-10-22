@@ -46,6 +46,12 @@ class TrainingConfig:
     log_to_wandb: bool = False
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
+    gradient_checkpointing: bool = True
+    allow_tf32: bool = True
+    enable_flash_sdp: bool = True
+    torch_compile: bool = False
+    torch_compile_mode: str = "default"
+    torch_compile_fullgraph: bool = False
 
 
 class DecoderTrainer:

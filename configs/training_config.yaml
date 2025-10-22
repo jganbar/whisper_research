@@ -39,6 +39,12 @@ training:
   # Gradient settings
   gradient_accumulation_steps: 4  # 96 * 4 = 384 effective batch size (faster updates)
   max_grad_norm: 1.0
+  gradient_checkpointing: true
+  allow_tf32: true
+  enable_flash_sdp: true
+  torch_compile: false
+  torch_compile_mode: "default"
+  torch_compile_fullgraph: false
   
   # Mixed precision
   fp16: false
