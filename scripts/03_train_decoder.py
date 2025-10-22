@@ -58,6 +58,12 @@ Example usage:
         choices=["cuda", "cpu", "mps"],
         help="Device to use for training"
     )
+    parser.add_argument(
+        "--resume_from",
+        type=str,
+        default=None,
+        help="Optional path to a training checkpoint to resume from"
+    )
     args = parser.parse_args()
     
     # Load configuration
@@ -123,6 +129,7 @@ Example usage:
         num_workers=dataloader_config.get('num_workers', 4),
         pin_memory=dataloader_config.get('pin_memory', True),
         seed=dataset_config.get('seed', 42),
+        processing_num_proc=dataset_config.get('processing_workers'),
     )
     logger.info("✓ Dataloaders created successfully")
     
@@ -137,11 +144,16 @@ Example usage:
         weight_decay=training_config['weight_decay'],
         warmup_steps=training_config['warmup_steps'],
         num_epochs=training_config['num_epochs'],
+        max_steps=training_config.get('max_steps', -1),
         gradient_accumulation_steps=training_config['gradient_accumulation_steps'],
         max_grad_norm=training_config['max_grad_norm'],
         fp16=training_config.get('fp16', False),
         bf16=training_config.get('bf16', True),
         save_steps=training_config['save_steps'],
+        save_total_limit=training_config.get(
+            'save_total_limit',
+            TrainingConfig.__dataclass_fields__['save_total_limit'].default,
+        ),
         eval_steps=training_config['eval_steps'],
         logging_steps=training_config['logging_steps'],
         output_dir=training_config['output_dir'],
@@ -177,6 +189,9 @@ Example usage:
         val_dataloader=val_dataloader,
         config=train_cfg,
     )
+    
+    if args.resume_from:
+        trainer.load_training_state(args.resume_from)
     logger.info("✓ Trainer initialized")
     
     # Start training

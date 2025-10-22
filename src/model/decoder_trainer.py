@@ -5,6 +5,7 @@ This module handles training the Whisper decoder on Azerbaijani text data.
 """
 
 import logging
+import math
 import os
 from typing import Optional
 from dataclasses import dataclass
@@ -75,6 +76,9 @@ class DecoderTrainer:
         self.global_step = 0
         self.epoch = 0
         self.best_val_loss = float('inf')
+        self._resume_epoch = 0
+        self._resume_batch = 0
+        self._resuming = False
         
         os.makedirs(config.output_dir, exist_ok=True)
         
@@ -120,26 +124,95 @@ class DecoderTrainer:
     def _create_scheduler(self):
         """Create learning rate scheduler with warmup."""
         if self.config.max_steps > 0:
-            total_steps = self.config.max_steps
+            total_steps = max(self.config.max_steps, 1)
         else:
-            total_steps = len(self.train_dataloader) * self.config.num_epochs // self.config.gradient_accumulation_steps
+            steps_per_epoch = math.ceil(len(self.train_dataloader) / self.config.gradient_accumulation_steps)
+            total_steps = max(steps_per_epoch * self.config.num_epochs, 1)
+        
+        warmup_iters = max(0, self.config.warmup_steps)
+        if warmup_iters >= total_steps:
+            if warmup_iters > 0:
+                logger.warning(
+                    "Warmup steps (%s) >= total training steps (%s); using linear warmup only.",
+                    warmup_iters,
+                    total_steps,
+                )
+            warmup_iters = total_steps
+        
+        if warmup_iters == 0:
+            return CosineAnnealingLR(self.optimizer, T_max=total_steps)
         
         warmup_scheduler = LinearLR(
             self.optimizer,
             start_factor=0.1,
             end_factor=1.0,
-            total_iters=self.config.warmup_steps,
+            total_iters=warmup_iters,
         )
+        
+        if warmup_iters == total_steps:
+            return warmup_scheduler
         
         cosine_scheduler = CosineAnnealingLR(
             self.optimizer,
-            T_max=total_steps - self.config.warmup_steps,
+            T_max=max(total_steps - warmup_iters, 1),
         )
         
         return SequentialLR(
             self.optimizer,
             schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[self.config.warmup_steps],
+            milestones=[warmup_iters],
+        )
+
+    def _move_optimizer_state_to_device(self):
+        """Ensure optimizer state tensors reside on the target device."""
+        device = torch.device(self.config.device)
+        for state in self.optimizer.state.values():
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor):
+                    state[key] = value.to(device)
+
+    def load_training_state(self, checkpoint_path: str):
+        """Load model, optimizer, and scheduler state from a checkpoint."""
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        
+        logger.info(f"Loading training state from checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.model.to(self.config.device)
+        
+        if "optimizer_state_dict" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            self._move_optimizer_state_to_device()
+        if "scheduler_state_dict" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if hasattr(self.scheduler, "last_epoch"):
+            self.scheduler.last_epoch = self.global_step
+        if self.scaler is not None and checkpoint.get("scaler_state_dict") is not None:
+            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        
+        self.global_step = checkpoint.get("global_step", 0)
+        self.epoch = checkpoint.get("epoch", 0)
+        self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        
+        batch_in_epoch = checkpoint.get("batch_in_epoch", -1)
+        self._resume_epoch = min(self.epoch, self.config.num_epochs - 1)
+        self._resume_batch = max(0, batch_in_epoch + 1)
+        steps_per_epoch = len(self.train_dataloader)
+        if steps_per_epoch > 0 and self._resume_batch >= steps_per_epoch:
+            self._resume_batch = 0
+            self._resume_epoch = min(self._resume_epoch + 1, self.config.num_epochs - 1)
+        
+        self.optimizer.zero_grad(set_to_none=True)
+        self._resuming = True
+        
+        logger.info(
+            "Checkpoint loaded (epoch=%s, batch=%s, global_step=%s, best_val_loss=%.4f)",
+            self._resume_epoch,
+            self._resume_batch,
+            self.global_step,
+            self.best_val_loss,
         )
     
     def _init_tensorboard(self):
@@ -174,13 +247,19 @@ class DecoderTrainer:
         self.model.train()
         total_loss = 0
         
-        for epoch in range(self.config.num_epochs):
+        start_epoch = self._resume_epoch if self._resuming else 0
+        
+        for epoch in range(start_epoch, self.config.num_epochs):
             self.epoch = epoch
             logger.info(f"\nEpoch {epoch + 1}/{self.config.num_epochs}")
             
             progress_bar = tqdm(self.train_dataloader, desc=f"Epoch {epoch + 1}")
+            resume_batch = self._resume_batch if self._resuming and epoch == start_epoch else 0
             
             for step, batch in enumerate(progress_bar):
+                if resume_batch and step < resume_batch:
+                    continue
+                
                 batch = {k: v.to(self.config.device) for k, v in batch.items()}
                 
                 # Forward pass with mixed precision (updated to avoid FutureWarning)
@@ -195,10 +274,10 @@ class DecoderTrainer:
                     loss = loss / self.config.gradient_accumulation_steps
                 
                 # Backward pass
-                if self.scaler is not None:
-                    self.scaler.scale(loss).backward()
-                else:
-                    loss.backward()
+                    if self.scaler is not None:
+                        self.scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
                 
                 total_loss += loss.item()
                 
@@ -257,18 +336,24 @@ class DecoderTrainer:
                         
                         if val_loss < self.best_val_loss:
                             self.best_val_loss = val_loss
-                            self.save_checkpoint(is_best=True)
+                            self.save_checkpoint(batch_step=step, is_best=True)
                         
                         self.model.train()
                     
                     # Save checkpoint
                     if self.global_step % self.config.save_steps == 0:
-                        self.save_checkpoint()
+                        self.save_checkpoint(batch_step=step)
                     
                     # Check max steps
                     if self.config.max_steps > 0 and self.global_step >= self.config.max_steps:
                         logger.info(f"Reached max steps: {self.config.max_steps}")
+                        self._resuming = False
+                        self._resume_batch = 0
                         return
+            
+            if self._resuming and epoch == start_epoch:
+                self._resuming = False
+                self._resume_batch = 0
         
         logger.info("Training completed!")
         self.save_checkpoint(is_final=True)
@@ -318,7 +403,7 @@ class DecoderTrainer:
         
         return avg_loss
     
-    def save_checkpoint(self, is_best: bool = False, is_final: bool = False):
+    def save_checkpoint(self, batch_step: Optional[int] = None, is_best: bool = False, is_final: bool = False):
         """Save model checkpoint."""
         checkpoint_dir = self.config.output_dir
         
@@ -332,10 +417,12 @@ class DecoderTrainer:
         torch.save({
             "global_step": self.global_step,
             "epoch": self.epoch,
+            "batch_in_epoch": batch_step if batch_step is not None else -1,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
             "best_val_loss": self.best_val_loss,
+            "scaler_state_dict": self.scaler.state_dict() if self.scaler is not None else None,
             "config": vars(self.config),
         }, checkpoint_path)
         
@@ -347,6 +434,9 @@ class DecoderTrainer:
     def _cleanup_checkpoints(self):
         """Remove old checkpoints to save disk space."""
         checkpoint_dir = self.config.output_dir
+        if not os.path.exists(checkpoint_dir):
+            return
+        
         checkpoints = [
             f for f in os.listdir(checkpoint_dir)
             if f.startswith("checkpoint-") and f.endswith(".pt")
@@ -358,4 +448,3 @@ class DecoderTrainer:
             for checkpoint in checkpoints[:-self.config.save_total_limit]:
                 checkpoint_path = os.path.join(checkpoint_dir, checkpoint)
                 os.remove(checkpoint_path)
-

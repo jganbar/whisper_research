@@ -12,6 +12,7 @@ dataset:
   text_column: "text"  # Column name in your parquet file
   max_seq_length: 448  # Whisper's FULL context (optimal for language modeling)
   seed: 42
+  processing_workers: 8  # Limit HF dataset.map parallelism (None = all cores)
 
 # Data loading (OPTIMIZED for RTX 4090: Max GPU utilization!)
 dataloader:
@@ -72,4 +73,3 @@ wandb:
 
 # Random seed
 seed: 42
-

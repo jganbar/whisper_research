@@ -2,9 +2,16 @@
 # Fast Training Script for Whisper Decoder
 # Optimized for RTX 4090 with CUDA
 
-# Stop any existing training
+# Stop any existing training for this script only
 echo "🛑 Stopping any running training..."
-pkill -9 python3
+PIDS=$(pgrep -f "python3 scripts/03_train_decoder.py")
+if [ -n "$PIDS" ]; then
+  echo "   Active PIDs: $PIDS"
+  kill -INT $PIDS 2>/dev/null || true
+  sleep 2
+else
+  echo "   No existing training processes found."
+fi
 
 # Setup
 cd /home/javidan/whisper_research
@@ -15,6 +22,7 @@ echo "🔧 Activating virtual environment..."
 source .venv/bin/activate
 
 # Set CUDA device (GPU 1 - RTX 4090)
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=1
 
 # Verify GPU
@@ -39,4 +47,3 @@ python3 scripts/03_train_decoder.py \
 
 echo ""
 echo "✅ Training finished! Check training.log for details."
-

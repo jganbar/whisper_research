@@ -187,6 +187,7 @@ def prepare_texts(
     text_column: str = "text",
     max_seq_length: int = 448,
     tokenizer: Optional[WhisperTokenizer] = None,
+    num_proc: Optional[int] = None,
 ) -> List[str]:
     """
     Extract and prepare texts from the dataset.
@@ -233,17 +234,22 @@ def prepare_texts(
         return {"processed_text": processed_texts, "is_valid": is_valid}
     
     # Use HuggingFace's parallel batch processing (utilizes all CPU cores)
+    map_workers = num_proc if num_proc and num_proc > 1 else None
     logger.info("  Running parallel batch processing...")
     processed = dataset.map(
         process_batch,
         batched=True,
         batch_size=10000,  # Large batches for efficiency
-        num_proc=None,  # Use all available CPU cores
+        num_proc=map_workers,
         desc="Processing texts",
     )
     
     # Filter and extract valid texts only
-    valid_dataset = processed.filter(lambda x: x["is_valid"], num_proc=None, desc="Filtering valid texts")
+    valid_dataset = processed.filter(
+        lambda x: x["is_valid"],
+        num_proc=map_workers,
+        desc="Filtering valid texts",
+    )
     texts = valid_dataset["processed_text"]
     
     # Convert to Python list (HuggingFace Column object is not mutable)
@@ -273,6 +279,7 @@ def create_dataloaders(
     num_workers: int = 4,
     pin_memory: bool = True,
     seed: int = 42,
+    processing_num_proc: Optional[int] = None,
 ) -> tuple[DataLoader, DataLoader]:
     """
     Create train and validation dataloaders from HuggingFace dataset.
@@ -290,6 +297,7 @@ def create_dataloaders(
         num_workers: Number of dataloader workers
         pin_memory: Whether to pin memory for faster GPU transfer
         seed: Random seed for reproducibility
+        processing_num_proc: Number of processes to use for preprocessing (None => default)
         
     Returns:
         Tuple of (train_dataloader, val_dataloader)
@@ -341,11 +349,11 @@ def create_dataloaders(
         else shuffled_dataset.select([])
     )
     
-    train_texts = prepare_texts(train_subset, text_column, max_length, tokenizer)
+    train_texts = prepare_texts(train_subset, text_column, max_length, tokenizer, num_proc=processing_num_proc)
     if not train_texts:
         raise ValueError("No training texts available after preprocessing. Check dataset preprocessing rules.")
     
-    val_texts = prepare_texts(val_subset, text_column, max_length, tokenizer) if val_target > 0 else []
+    val_texts = prepare_texts(val_subset, text_column, max_length, tokenizer, num_proc=processing_num_proc) if val_target > 0 else []
     if val_target > 0 and not val_texts:
         raise ValueError(
             "Validation split produced zero samples after preprocessing. "

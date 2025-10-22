@@ -48,8 +48,14 @@ echo ""
 
 # Stop any existing training
 echo "🛑 Stopping any running training..."
-pkill -9 python3
-sleep 2
+PIDS=$(pgrep -f "python3 scripts/03_train_decoder.py")
+if [ -n "$PIDS" ]; then
+  echo "   Active PIDs: $PIDS"
+  kill -INT $PIDS 2>/dev/null || true
+  sleep 2
+else
+  echo "   No existing training processes found."
+fi
 
 # Clean up old logs
 rm -f training.log
@@ -59,6 +65,7 @@ echo "🔧 Activating virtual environment..."
 source .venv/bin/activate
 
 # Set CUDA device
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES=$GPU_INDEX
 
 echo ""
@@ -91,4 +98,3 @@ echo "✅ Training finished!"
 echo "======================================================================"
 echo "Check training.log for full details"
 echo ""
-
